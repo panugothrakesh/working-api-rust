@@ -28,18 +28,18 @@ pub async fn insert_depth_history(client: &Client, intervals: &[Interval]) -> Re
             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
         ";
 
-        let asset_depth: i64 = interval.asset_depth.parse().unwrap_or(0);
-        let asset_price: f64 = interval.asset_price.parse().unwrap_or(0.0);
-        let asset_price_usd: f64 = interval.asset_price_usd.parse().unwrap_or(0.0);
-        let end_time: i64 = interval.end_time.parse().unwrap_or(0);
-        let liquidity_units: i64 = interval.liquidity_units.parse().unwrap_or(0);
-        let luvi: f64 = interval.luvi.parse().unwrap_or(0.0);
-        let members_count: i32 = interval.members_count.parse().unwrap_or(0);
-        let rune_depth: i64 = interval.rune_depth.parse().unwrap_or(0);
-        let start_time: i64 = interval.start_time.parse().unwrap_or(0);
-        let synth_supply: i64 = interval.synth_supply.parse().unwrap_or(0);
-        let synth_units: i64 = interval.synth_units.parse().unwrap_or(0);
-        let units: i64 = interval.units.parse().unwrap_or(0);
+        let asset_depth: i64 = interval.asset_depth;
+        let asset_price: f64 = interval.asset_price;
+        let asset_price_usd: f64 = interval.asset_price_usd;
+        let end_time: i64 = interval.end_time;
+        let liquidity_units: i64 = interval.liquidity_units;
+        let luvi: f64 = interval.luvi;
+        let members_count: i32 = interval.members_count;
+        let rune_depth: i64 = interval.rune_depth;
+        let start_time: i64 = interval.start_time;
+        let synth_supply: i64 = interval.synth_supply;
+        let synth_units: i64 = interval.synth_units;
+        let units: i64 = interval.units;
 
         // Execute the query
         client.execute(query, &[

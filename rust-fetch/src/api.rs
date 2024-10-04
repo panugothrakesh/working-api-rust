@@ -59,7 +59,7 @@ pub async fn fetch_depth_history(client: &tokio_postgres::Client) -> Result<(), 
 
         // Get the last `end_time` from the current batch and set it as the next `from_timestamp`
         if let Some(last_interval) = depth_history_response.intervals.last() {
-            let last_end_time: i64 = last_interval.end_time.parse().unwrap_or(0);
+            let last_end_time: i64 = last_interval.end_time;
             from_timestamp = last_end_time + 1; // Increment to avoid overlap
         }
 
