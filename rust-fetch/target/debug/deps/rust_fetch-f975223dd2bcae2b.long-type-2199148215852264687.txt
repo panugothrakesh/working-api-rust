@@ -1,0 +1,1 @@
+fn(Query<server::QueryParams>, State<{type error}>) -> impl Future<Output = Result<impl IntoResponse, StatusCode>> {server::get_depth_history}

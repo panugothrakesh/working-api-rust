@@ -1,8 +1,0 @@
-/Users/rakeshp/Documents/Catalog/Week3/rust-fetch/target/debug/deps/librust_fetch-9bb137c9d504ff3d.rmeta: src/main.rs src/api.rs src/db.rs src/models.rs
-
-/Users/rakeshp/Documents/Catalog/Week3/rust-fetch/target/debug/deps/rust_fetch-9bb137c9d504ff3d.d: src/main.rs src/api.rs src/db.rs src/models.rs
-
-src/main.rs:
-src/api.rs:
-src/db.rs:
-src/models.rs:

@@ -1,0 +1,1 @@
+for<'a, 'b> fn(&'a tokio_postgres::Client, &'b [models::Interval]) -> impl Future<Output = Result<(), tokio_postgres::Error>> {insert_depth_history}
