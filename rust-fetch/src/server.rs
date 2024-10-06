@@ -4,10 +4,10 @@ use axum::{
 };
 use std::net::SocketAddr;
 use crate::db::connect_db;
-use crate::models::{Interval, RunePoolInterval, SwapInterval}; // Ensure SwapInterval is defined
+use crate::models::{Interval, RunePoolInterval, SwapInterval}; // Ensure SwapInterval is defined for swap history
 use serde_json::json;
 use serde::Deserialize;
-use chrono::{NaiveDate, NaiveDateTime, Duration};
+use chrono::{NaiveDateTime, Duration};
 use std::collections::HashMap;
 
 #[derive(Deserialize)]
@@ -26,7 +26,7 @@ pub async fn start_server() {
     let app = Router::new()
         .route("/depth-history", get(get_depth_history))   // Route for depth history
         .route("/rune-pool-history", get(get_rune_pool_history)) // Route for rune pool history
-        .route("/swap-history", get(get_swap_history)); // Route for swap history
+        .route("/swap-history", get(get_swap_history));    // Route for swap history
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 8080));
     println!("Server running at http://{}", addr);
@@ -37,36 +37,29 @@ pub async fn start_server() {
         .unwrap();
 }
 
-// Reuse the aggregation logic for all histories (depth, rune pool, and swaps)
-fn aggregate_by_interval<T>(
-    data: Vec<T>,
+// Aggregation logic for depth history
+fn aggregate_depth_by_interval(
+    data: Vec<Interval>,
     interval_duration: Duration,
     limit: usize,
-) -> Vec<T> 
-where
-    T: Clone + IntervalAggregation,  // IntervalAggregation trait handles aggregation for all history types
-{
-    let mut aggregated_data: Vec<T> = Vec::new();
-    let mut current_agg: Option<T> = None;
+) -> Vec<Interval> {
+    let mut aggregated_data: Vec<Interval> = Vec::new();
+    let mut current_agg: Option<Interval> = None;
     let mut output_count = 0;
     let mut start_of_interval: Option<NaiveDateTime> = None;
 
     for entry in data {
-        let start_time = NaiveDateTime::from_timestamp(entry.get_start_time(), 0);
+        let start_time = NaiveDateTime::from_timestamp(entry.start_time, 0);
 
         if let Some(start_interval) = start_of_interval {
             if start_time - start_interval < interval_duration {
-                // If the current entry is within the same interval, aggregate it
                 if let Some(ref mut agg) = current_agg {
                     agg.aggregate(&entry);
                 }
             } else {
-                // Push the current aggregation and start a new interval
                 if let Some(agg) = current_agg.take() {
                     aggregated_data.push(agg);
                     output_count += 1;
-
-                    // Stop if we have reached the limit
                     if output_count >= limit {
                         break;
                     }
@@ -75,13 +68,11 @@ where
                 current_agg = Some(entry.clone());
             }
         } else {
-            // Initialize the first interval
             start_of_interval = Some(start_time);
             current_agg = Some(entry.clone());
         }
     }
 
-    // Push the last aggregation if it exists
     if let Some(agg) = current_agg {
         aggregated_data.push(agg);
     }
@@ -89,18 +80,94 @@ where
     aggregated_data
 }
 
-// Trait for aggregating intervals, implemented by Interval, RunePoolInterval, and SwapInterval
-pub trait IntervalAggregation {
-    fn get_start_time(&self) -> i64;
-    fn aggregate(&mut self, other: &Self);
-}
+// Aggregation logic for rune pool history
+fn aggregate_rune_pool_by_interval(
+    data: Vec<RunePoolInterval>,
+    interval_duration: Duration,
+    limit: usize,
+) -> Vec<RunePoolInterval> {
+    let mut aggregated_data: Vec<RunePoolInterval> = Vec::new();
+    let mut current_agg: Option<RunePoolInterval> = None;
+    let mut output_count = 0;
+    let mut start_of_interval: Option<NaiveDateTime> = None;
 
-// Implement IntervalAggregation for Interval (Depth History)
-impl IntervalAggregation for Interval {
-    fn get_start_time(&self) -> i64 {
-        self.start_time
+    for entry in data {
+        let start_time = NaiveDateTime::from_timestamp(entry.start_time, 0);
+
+        if let Some(start_interval) = start_of_interval {
+            if start_time - start_interval < interval_duration {
+                if let Some(ref mut agg) = current_agg {
+                    agg.aggregate(&entry);
+                }
+            } else {
+                if let Some(agg) = current_agg.take() {
+                    aggregated_data.push(agg);
+                    output_count += 1;
+                    if output_count >= limit {
+                        break;
+                    }
+                }
+                start_of_interval = Some(start_time);
+                current_agg = Some(entry.clone());
+            }
+        } else {
+            start_of_interval = Some(start_time);
+            current_agg = Some(entry.clone());
+        }
     }
 
+    if let Some(agg) = current_agg {
+        aggregated_data.push(agg);
+    }
+
+    aggregated_data
+}
+
+// Aggregation logic for swap history
+fn aggregate_swap_by_interval(
+    data: Vec<SwapInterval>,
+    interval_duration: Duration,
+    limit: usize,
+) -> Vec<SwapInterval> {
+    let mut aggregated_data: Vec<SwapInterval> = Vec::new();
+    let mut current_agg: Option<SwapInterval> = None;
+    let mut output_count = 0;
+    let mut start_of_interval: Option<NaiveDateTime> = None;
+
+    for entry in data {
+        let start_time = NaiveDateTime::from_timestamp(entry.start_time, 0);
+
+        if let Some(start_interval) = start_of_interval {
+            if start_time - start_interval < interval_duration {
+                if let Some(ref mut agg) = current_agg {
+                    agg.aggregate(&entry);
+                }
+            } else {
+                if let Some(agg) = current_agg.take() {
+                    aggregated_data.push(agg);
+                    output_count += 1;
+                    if output_count >= limit {
+                        break;
+                    }
+                }
+                start_of_interval = Some(start_time);
+                current_agg = Some(entry.clone());
+            }
+        } else {
+            start_of_interval = Some(start_time);
+            current_agg = Some(entry.clone());
+        }
+    }
+
+    if let Some(agg) = current_agg {
+        aggregated_data.push(agg);
+    }
+
+    aggregated_data
+}
+
+// Trait for aggregating depth history intervals
+impl Interval {
     fn aggregate(&mut self, other: &Self) {
         self.asset_depth += other.asset_depth;
         self.asset_price += other.asset_price;
@@ -116,12 +183,8 @@ impl IntervalAggregation for Interval {
     }
 }
 
-// Implement IntervalAggregation for RunePoolInterval
-impl IntervalAggregation for RunePoolInterval {
-    fn get_start_time(&self) -> i64 {
-        self.start_time
-    }
-
+// Trait for aggregating rune pool history intervals
+impl RunePoolInterval {
     fn aggregate(&mut self, other: &Self) {
         self.units += other.units;
         self.count += other.count;
@@ -129,17 +192,45 @@ impl IntervalAggregation for RunePoolInterval {
     }
 }
 
-// Implement IntervalAggregation for SwapInterval
-impl IntervalAggregation for SwapInterval {
-    fn get_start_time(&self) -> i64 {
-        self.start_time
-    }
-
+// Trait for aggregating swap history intervals
+impl SwapInterval {
     fn aggregate(&mut self, other: &Self) {
+        self.to_asset_count += other.to_asset_count;
+        self.to_rune_count += other.to_rune_count;
+        self.to_trade_count += other.to_trade_count;
+        self.from_trade_count += other.from_trade_count;
+        self.synth_mint_count += other.synth_mint_count;
+        self.synth_redeem_count += other.synth_redeem_count;
+        self.total_count += other.total_count;
         self.to_asset_volume += other.to_asset_volume;
         self.to_rune_volume += other.to_rune_volume;
+        self.to_trade_volume += other.to_trade_volume;
         self.from_trade_volume += other.from_trade_volume;
+        self.synth_mint_volume += other.synth_mint_volume;
+        self.synth_redeem_volume += other.synth_redeem_volume;
         self.total_volume += other.total_volume;
+        self.total_volume_usd += other.total_volume_usd;
+        self.to_asset_volume_usd += other.to_asset_volume_usd;
+        self.to_rune_volume_usd += other.to_rune_volume_usd;
+        self.to_trade_volume_usd += other.to_trade_volume_usd;
+        self.from_trade_volume_usd += other.from_trade_volume_usd;
+        self.synth_mint_volume_usd += other.synth_mint_volume_usd;
+        self.synth_redeem_volume_usd += other.synth_redeem_volume_usd;
+        self.to_asset_fees += other.to_asset_fees;
+        self.to_rune_fees += other.to_rune_fees;
+        self.to_trade_fees += other.to_trade_fees;
+        self.from_trade_fees += other.from_trade_fees;
+        self.synth_mint_fees += other.synth_mint_fees;
+        self.synth_redeem_fees += other.synth_redeem_fees;
+        self.total_fees += other.total_fees;
+        self.to_asset_average_slip = (self.to_asset_average_slip + other.to_asset_average_slip) / 2.0;
+        self.to_rune_average_slip = (self.to_rune_average_slip + other.to_rune_average_slip) / 2.0;
+        self.to_trade_average_slip = (self.to_trade_average_slip + other.to_trade_average_slip) / 2.0;
+        self.from_trade_average_slip = (self.from_trade_average_slip + other.from_trade_average_slip) / 2.0;
+        self.synth_mint_average_slip = (self.synth_mint_average_slip + other.synth_mint_average_slip) / 2.0;
+        self.synth_redeem_average_slip = (self.synth_redeem_average_slip + other.synth_redeem_average_slip) / 2.0;
+        self.average_slip = (self.average_slip + other.average_slip) / 2.0;
+        self.rune_price_usd = other.rune_price_usd;
         self.end_time = self.end_time.max(other.end_time);
     }
 }
@@ -162,21 +253,23 @@ async fn get_depth_history(Query(params): Query<QueryParams>) -> Json<serde_json
 
             query.push_str(" ORDER BY start_time ASC");
 
-            // Pagination logic
-            let limit = params.limit.unwrap_or(400);
-            let page = params.page.unwrap_or(1);
-            let offset = (page - 1) * limit;  // Calculate the offset for pagination
+            if let Some(interval) = &params.interval {
+                let rows = client.query(&query, &[]).await.unwrap();
+                let intervals: Vec<Interval> = parse_rows_to_intervals(rows);
+                let limit = params.limit.unwrap_or(400);
 
-            query.push_str(&format!(" LIMIT {} OFFSET {}", limit, offset));
+                let aggregated = aggregate_depth_by_interval(intervals, get_interval_duration(interval), limit as usize);
 
-            let rows = client.query(&query, &[]).await.unwrap();
-            let data: Vec<Interval> = parse_rows_to_intervals(rows);
+                return Json(json!({ "data": aggregated }));
+            } else {
+                let limit = params.limit.unwrap_or(400);
+                query.push_str(&format!(" LIMIT {}", limit));
 
-            Json(json!({
-                "page": page,
-                "limit": limit,
-                "data": data
-            }))
+                let rows = client.query(&query, &[]).await.unwrap();
+                let data: Vec<Interval> = parse_rows_to_intervals(rows);
+
+                return Json(json!({ "data": data }));
+            }
         }
         Err(e) => {
             eprintln!("Failed to connect to the database: {}", e);
@@ -201,21 +294,23 @@ async fn get_rune_pool_history(Query(params): Query<QueryParams>) -> Json<serde_
 
             query.push_str(" ORDER BY start_time ASC");
 
-            // Pagination logic
-            let limit = params.limit.unwrap_or(400);
-            let page = params.page.unwrap_or(1);
-            let offset = (page - 1) * limit;
+            if let Some(interval) = &params.interval {
+                let rows = client.query(&query, &[]).await.unwrap();
+                let intervals: Vec<RunePoolInterval> = parse_rows_to_rune_pool_intervals(rows);
+                let limit = params.limit.unwrap_or(400);
 
-            query.push_str(&format!(" LIMIT {} OFFSET {}", limit, offset));
+                let aggregated = aggregate_rune_pool_by_interval(intervals, get_interval_duration(interval), limit as usize);
 
-            let rows = client.query(&query, &[]).await.unwrap();
-            let data: Vec<RunePoolInterval> = parse_rows_to_rune_pool_intervals(rows);
+                return Json(json!({ "data": aggregated }));
+            } else {
+                let limit = params.limit.unwrap_or(400);
+                query.push_str(&format!(" LIMIT {}", limit));
 
-            Json(json!({
-                "page": page,
-                "limit": limit,
-                "data": data
-            }))
+                let rows = client.query(&query, &[]).await.unwrap();
+                let data: Vec<RunePoolInterval> = parse_rows_to_rune_pool_intervals(rows);
+
+                return Json(json!({ "data": data }));
+            }
         }
         Err(e) => {
             eprintln!("Failed to connect to the database: {}", e);
@@ -231,14 +326,13 @@ async fn get_swap_history(Query(params): Query<QueryParams>) -> Json<serde_json:
             let mut query = String::from("SELECT start_time, end_time, to_asset_count, to_rune_count, to_trade_count, \
                                           from_trade_count, synth_mint_count, synth_redeem_count, total_count, \
                                           to_asset_volume, to_rune_volume, to_trade_volume, from_trade_volume, \
-                                          synth_mint_volume, synth_redeem_volume, total_volume, to_asset_volume_usd, \
-                                          to_rune_volume_usd, to_trade_volume_usd, from_trade_volume_usd, \
-                                          synth_mint_volume_usd, synth_redeem_volume_usd, total_volume_usd, \
-                                          to_asset_fees, to_rune_fees, to_trade_fees, from_trade_fees, \
-                                          synth_mint_fees, synth_redeem_fees, total_fees, to_asset_average_slip, \
-                                          to_rune_average_slip, to_trade_average_slip, from_trade_average_slip, \
-                                          synth_mint_average_slip, synth_redeem_average_slip, average_slip, rune_price_usd \
-                                          FROM swaps");
+                                          synth_mint_volume, synth_redeem_volume, total_volume, total_volume_usd, \
+                                          to_asset_volume_usd, to_rune_volume_usd, to_trade_volume_usd, from_trade_volume_usd, \
+                                          synth_mint_volume_usd, synth_redeem_volume_usd, to_asset_fees, to_rune_fees, \
+                                          to_trade_fees, from_trade_fees, synth_mint_fees, synth_redeem_fees, total_fees, \
+                                          to_asset_average_slip, to_rune_average_slip, to_trade_average_slip, \
+                                          from_trade_average_slip, synth_mint_average_slip, synth_redeem_average_slip, \
+                                          average_slip, rune_price_usd FROM swaps");
 
             let mut filters = Vec::new();
             build_query_filters(&mut filters, &params);
@@ -250,21 +344,23 @@ async fn get_swap_history(Query(params): Query<QueryParams>) -> Json<serde_json:
 
             query.push_str(" ORDER BY start_time ASC");
 
-            // Pagination logic
-            let limit = params.limit.unwrap_or(400);
-            let page = params.page.unwrap_or(1);
-            let offset = (page - 1) * limit;
+            if let Some(interval) = &params.interval {
+                let rows = client.query(&query, &[]).await.unwrap();
+                let intervals: Vec<SwapInterval> = parse_rows_to_swap_intervals(rows);
+                let limit = params.limit.unwrap_or(400);
 
-            query.push_str(&format!(" LIMIT {} OFFSET {}", limit, offset));
+                let aggregated = aggregate_swap_by_interval(intervals, get_interval_duration(interval), limit as usize);
 
-            let rows = client.query(&query, &[]).await.unwrap();
-            let data: Vec<SwapInterval> = parse_rows_to_swap_intervals(rows);
+                return Json(json!({ "data": aggregated }));
+            } else {
+                let limit = params.limit.unwrap_or(400);
+                query.push_str(&format!(" LIMIT {}", limit));
 
-            Json(json!({
-                "page": page,
-                "limit": limit,
-                "data": data
-            }))
+                let rows = client.query(&query, &[]).await.unwrap();
+                let data: Vec<SwapInterval> = parse_rows_to_swap_intervals(rows);
+
+                return Json(json!({ "data": data }));
+            }
         }
         Err(e) => {
             eprintln!("Failed to connect to the database: {}", e);
@@ -273,7 +369,7 @@ async fn get_swap_history(Query(params): Query<QueryParams>) -> Json<serde_json:
     }
 }
 
-// Utility functions
+// Utility functions for query filters and interval parsing
 fn build_query_filters(filters: &mut Vec<String>, params: &QueryParams) {
     if let Some(from_date) = &params.from {
         match from_date.parse::<i64>() {
@@ -288,9 +384,16 @@ fn build_query_filters(filters: &mut Vec<String>, params: &QueryParams) {
             Err(_) => {}
         }
     }
+}
 
-    if let Some(liquidity_gt) = params.liquidity_gt {
-        filters.push(format!("liquidity_units > {}", liquidity_gt));
+fn get_interval_duration(interval: &str) -> Duration {
+    match interval {
+        "day" => Duration::days(1),
+        "week" => Duration::weeks(1),
+        "month" => Duration::days(30),
+        "6months" => Duration::days(180),
+        "year" => Duration::days(365),
+        _ => Duration::days(1), // Default to 1-day interval if none is provided
     }
 }
 
@@ -346,13 +449,13 @@ fn parse_rows_to_swap_intervals(rows: Vec<tokio_postgres::Row>) -> Vec<SwapInter
             synth_mint_volume: row.get("synth_mint_volume"),
             synth_redeem_volume: row.get("synth_redeem_volume"),
             total_volume: row.get("total_volume"),
+            total_volume_usd: row.get("total_volume_usd"),
             to_asset_volume_usd: row.get("to_asset_volume_usd"),
             to_rune_volume_usd: row.get("to_rune_volume_usd"),
             to_trade_volume_usd: row.get("to_trade_volume_usd"),
             from_trade_volume_usd: row.get("from_trade_volume_usd"),
             synth_mint_volume_usd: row.get("synth_mint_volume_usd"),
             synth_redeem_volume_usd: row.get("synth_redeem_volume_usd"),
-            total_volume_usd: row.get("total_volume_usd"),
             to_asset_fees: row.get("to_asset_fees"),
             to_rune_fees: row.get("to_rune_fees"),
             to_trade_fees: row.get("to_trade_fees"),
