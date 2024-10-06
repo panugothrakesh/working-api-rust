@@ -1,1 +1,0 @@
-/Users/rakeshp/Documents/Catalog/Week3/rust-fetch/target/debug/rust-fetch: /Users/rakeshp/Documents/Catalog/Week3/rust-fetch/src/api.rs /Users/rakeshp/Documents/Catalog/Week3/rust-fetch/src/db.rs /Users/rakeshp/Documents/Catalog/Week3/rust-fetch/src/main.rs /Users/rakeshp/Documents/Catalog/Week3/rust-fetch/src/models.rs

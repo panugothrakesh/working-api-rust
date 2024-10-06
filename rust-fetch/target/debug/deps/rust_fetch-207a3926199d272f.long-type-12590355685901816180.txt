@@ -1,1 +1,0 @@
-for<'a> fn(&'a tokio_postgres::Client, Query<QueryParams>) -> impl Future<Output = Result<Json<Vec<HashMap<std::string::String, std::string::String>>>, tokio_postgres::Error>> {fetch_filtered_depth_history}

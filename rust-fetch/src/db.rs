@@ -1,5 +1,5 @@
 use tokio_postgres::{Client, Error as PgError, NoTls};
-use crate::models::{Interval, QueryParams}; // Ensure QueryParams is imported
+use crate::models::{Interval, RunePoolInterval, SwapInterval, QueryParams}; // Ensure QueryParams, RunePoolInterval, and SwapInterval are imported
 use std::env;
 use chrono::{NaiveDateTime};
 
@@ -46,10 +46,98 @@ pub async fn insert_depth_history(client: &Client, intervals: &[Interval]) -> Re
     Ok(())
 }
 
+// New function to insert fetched data into the rune_pool_history table
+pub async fn insert_rune_pool_history(client: &Client, intervals: &[RunePoolInterval]) -> Result<(), PgError> {
+    for interval in intervals {
+        let exists_query = "
+            SELECT 1 FROM rune_pool_history WHERE start_time = $1
+        ";
+        let existing_rows = client.query(exists_query, &[&interval.start_time]).await?;
+
+        if existing_rows.is_empty() {
+            let query = "
+                INSERT INTO rune_pool_history (
+                    start_time, end_time, units, count
+                ) VALUES ($1, $2, $3, $4)
+            ";
+
+            client.execute(query, &[
+                &interval.start_time, &interval.end_time, &interval.units, &interval.count
+            ]).await?;
+        }
+    }
+    Ok(())
+}
+
+// Function to insert fetched data into the swaps table
+pub async fn insert_swap_history(client: &Client, intervals: &[SwapInterval]) -> Result<(), PgError> {
+    for interval in intervals {
+        let exists_query = "
+            SELECT 1 FROM swaps WHERE start_time = $1
+        ";
+        let existing_rows = client.query(exists_query, &[&interval.start_time]).await?;
+
+        // Only insert if the entry doesn't already exist
+        if existing_rows.is_empty() {
+            let query = "
+                INSERT INTO swaps (
+                    start_time, end_time, to_asset_count, to_rune_count, to_trade_count,
+                    from_trade_count, synth_mint_count, synth_redeem_count, total_count,
+                    to_asset_volume, to_rune_volume, to_trade_volume, from_trade_volume,
+                    synth_mint_volume, synth_redeem_volume, total_volume,
+                    to_asset_volume_usd, to_rune_volume_usd, to_trade_volume_usd, from_trade_volume_usd,
+                    synth_mint_volume_usd, synth_redeem_volume_usd, total_volume_usd,
+                    to_asset_fees, to_rune_fees, to_trade_fees, from_trade_fees,
+                    synth_mint_fees, synth_redeem_fees, total_fees,
+                    to_asset_average_slip, to_rune_average_slip, to_trade_average_slip,
+                    from_trade_average_slip, synth_mint_average_slip, synth_redeem_average_slip, 
+                    average_slip, rune_price_usd
+                ) VALUES (
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
+                    $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30,
+                    $31, $32, $33, $34, $35, $36, $37, $38
+                )
+            ";
+
+            // The values here should match the number of columns in the INSERT statement
+            client.execute(query, &[
+                &interval.start_time, 
+                &interval.end_time,
+                &interval.to_asset_count, &interval.to_rune_count, &interval.to_trade_count,
+                &interval.from_trade_count, &interval.synth_mint_count, &interval.synth_redeem_count, &interval.total_count,
+                &interval.to_asset_volume, &interval.to_rune_volume, &interval.to_trade_volume, &interval.from_trade_volume,
+                &interval.synth_mint_volume, &interval.synth_redeem_volume, &interval.total_volume,
+                &interval.to_asset_volume_usd, &interval.to_rune_volume_usd, &interval.to_trade_volume_usd, &interval.from_trade_volume_usd,
+                &interval.synth_mint_volume_usd, &interval.synth_redeem_volume_usd, &interval.total_volume_usd,
+                &interval.to_asset_fees, &interval.to_rune_fees, &interval.to_trade_fees, &interval.from_trade_fees,
+                &interval.synth_mint_fees, &interval.synth_redeem_fees, &interval.total_fees,
+                &interval.to_asset_average_slip, &interval.to_rune_average_slip, &interval.to_trade_average_slip,
+                &interval.from_trade_average_slip, &interval.synth_mint_average_slip, &interval.synth_redeem_average_slip,
+                &interval.average_slip, &interval.rune_price_usd
+            ]).await?;
+        }
+    }
+    Ok(())
+}
+
 // Function to get the last timestamp from the depth_history table
 pub async fn get_last_timestamp(client: &Client) -> Result<i64, PgError> {
     // Query to get the maximum end_time
     let row = client.query_one("SELECT COALESCE(MAX(end_time), 0) FROM depth_history", &[]).await?;
+    Ok(row.get(0)) // Assuming end_time is stored as i64
+}
+
+// Function to get the last timestamp from the rune_pool_history table
+pub async fn get_last_rune_pool_timestamp(client: &Client) -> Result<i64, PgError> {
+    // Query to get the maximum end_time
+    let row = client.query_one("SELECT COALESCE(MAX(end_time), 0) FROM rune_pool_history", &[]).await?;
+    Ok(row.get(0)) // Assuming end_time is stored as i64
+}
+
+// Function to get the last timestamp from the swaps table
+pub async fn get_last_swap_timestamp(client: &Client) -> Result<i64, PgError> {
+    // Query to get the maximum end_time
+    let row = client.query_one("SELECT COALESCE(MAX(end_time), 0) FROM swaps", &[]).await?;
     Ok(row.get(0)) // Assuming end_time is stored as i64
 }
 

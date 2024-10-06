@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::str::FromStr;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DepthHistoryResponse {
@@ -9,31 +8,135 @@ pub struct DepthHistoryResponse {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Interval {
     #[serde(rename = "assetDepth", with = "string_as_i64")]
-    pub asset_depth: i64,  // Changed from String to i64
+    pub asset_depth: i64,
     #[serde(rename = "assetPrice", with = "string_as_f64")]
-    pub asset_price: f64,  // Changed from String to f64
+    pub asset_price: f64,
     #[serde(rename = "assetPriceUSD", with = "string_as_f64")]
-    pub asset_price_usd: f64,  // Changed from String to f64
+    pub asset_price_usd: f64,
     #[serde(rename = "endTime", with = "string_as_i64")]
-    pub end_time: i64,  // Changed from String to i64
+    pub end_time: i64,
     #[serde(rename = "liquidityUnits", with = "string_as_i64")]
-    pub liquidity_units: i64,  // Changed from String to i64
+    pub liquidity_units: i64,
     #[serde(rename = "luvi", with = "string_as_f64")]
-    pub luvi: f64,  // Changed from String to f64
+    pub luvi: f64,
     #[serde(rename = "membersCount", with = "string_as_i32")]
-    pub members_count: i32,  // Changed from String to i32
+    pub members_count: i32,
     #[serde(rename = "runeDepth", with = "string_as_i64")]
-    pub rune_depth: i64,  // Changed from String to i64
+    pub rune_depth: i64,
     #[serde(rename = "startTime", with = "string_as_i64")]
-    pub start_time: i64,  // Changed from String to i64
+    pub start_time: i64,
     #[serde(rename = "synthSupply", with = "string_as_i64")]
-    pub synth_supply: i64,  // Changed from String to i64
+    pub synth_supply: i64,
     #[serde(rename = "synthUnits", with = "string_as_i64")]
-    pub synth_units: i64,  // Changed from String to i64
+    pub synth_units: i64,
     #[serde(rename = "units", with = "string_as_i64")]
-    pub units: i64,  // Changed from String to i64
+    pub units: i64,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RunePoolHistoryResponse {
+    pub intervals: Vec<RunePoolInterval>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RunePoolInterval {
+    #[serde(rename = "startTime", with = "string_as_i64")]
+    pub start_time: i64,
+    #[serde(rename = "endTime", with = "string_as_i64")]
+    pub end_time: i64,
+    #[serde(rename = "units", with = "string_as_i64")]
+    pub units: i64,
+    #[serde(rename = "count", with = "string_as_i64")]
+    pub count: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SwapHistoryResponse {
+    pub intervals: Vec<SwapInterval>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SwapInterval {
+    #[serde(rename = "startTime", with = "string_as_i64")]
+    pub start_time: i64,
+    #[serde(rename = "endTime", with = "string_as_i64")]
+    pub end_time: i64,
+    #[serde(rename = "toAssetCount", with = "string_as_i64")]
+    pub to_asset_count: i64,
+    #[serde(rename = "toRuneCount", with = "string_as_i64")]
+    pub to_rune_count: i64,
+    #[serde(rename = "toTradeCount", with = "string_as_i64")]
+    pub to_trade_count: i64,
+    #[serde(rename = "fromTradeCount", with = "string_as_i64")]
+    pub from_trade_count: i64,
+    #[serde(rename = "synthMintCount", with = "string_as_i64")]
+    pub synth_mint_count: i64,
+    #[serde(rename = "synthRedeemCount", with = "string_as_i64")]
+    pub synth_redeem_count: i64,
+    #[serde(rename = "totalCount", with = "string_as_i64")]
+    pub total_count: i64,
+    #[serde(rename = "toAssetVolume", with = "string_as_f64")]
+    pub to_asset_volume: f64,
+    #[serde(rename = "toRuneVolume", with = "string_as_f64")]
+    pub to_rune_volume: f64,
+    #[serde(rename = "toTradeVolume", with = "string_as_f64")]
+    pub to_trade_volume: f64,
+    #[serde(rename = "fromTradeVolume", with = "string_as_f64")]
+    pub from_trade_volume: f64,
+    #[serde(rename = "synthMintVolume", with = "string_as_f64")]
+    pub synth_mint_volume: f64,
+    #[serde(rename = "synthRedeemVolume", with = "string_as_f64")]
+    pub synth_redeem_volume: f64,
+    #[serde(rename = "totalVolume", with = "string_as_f64")]
+    pub total_volume: f64,
+    #[serde(rename = "toAssetVolumeUSD", with = "string_as_f64")]
+    pub to_asset_volume_usd: f64,
+    #[serde(rename = "toRuneVolumeUSD", with = "string_as_f64")]
+    pub to_rune_volume_usd: f64,
+    #[serde(rename = "toTradeVolumeUSD", with = "string_as_f64")]
+    pub to_trade_volume_usd: f64,
+    #[serde(rename = "fromTradeVolumeUSD", with = "string_as_f64")]
+    pub from_trade_volume_usd: f64,
+    #[serde(rename = "synthMintVolumeUSD", with = "string_as_f64")]
+    pub synth_mint_volume_usd: f64,
+    #[serde(rename = "synthRedeemVolumeUSD", with = "string_as_f64")]
+    pub synth_redeem_volume_usd: f64,
+    #[serde(rename = "totalVolumeUSD", with = "string_as_f64")]
+    pub total_volume_usd: f64,
+    #[serde(rename = "toAssetFees", with = "string_as_f64")]
+    pub to_asset_fees: f64,
+    #[serde(rename = "toRuneFees", with = "string_as_f64")]
+    pub to_rune_fees: f64,
+    #[serde(rename = "toTradeFees", with = "string_as_f64")]
+    pub to_trade_fees: f64,
+    #[serde(rename = "fromTradeFees", with = "string_as_f64")]
+    pub from_trade_fees: f64,
+    #[serde(rename = "synthMintFees", with = "string_as_f64")]
+    pub synth_mint_fees: f64,
+    #[serde(rename = "synthRedeemFees", with = "string_as_f64")]
+    pub synth_redeem_fees: f64,
+    #[serde(rename = "totalFees", with = "string_as_f64")]
+    pub total_fees: f64,
+    #[serde(rename = "toAssetAverageSlip", with = "string_as_f64")]
+    pub to_asset_average_slip: f64,
+    #[serde(rename = "toRuneAverageSlip", with = "string_as_f64")]
+    pub to_rune_average_slip: f64,
+    #[serde(rename = "toTradeAverageSlip", with = "string_as_f64")]
+    pub to_trade_average_slip: f64,
+    #[serde(rename = "fromTradeAverageSlip", with = "string_as_f64")]
+    pub from_trade_average_slip: f64,
+    #[serde(rename = "synthMintAverageSlip", with = "string_as_f64")]
+    pub synth_mint_average_slip: f64,
+    #[serde(rename = "synthRedeemAverageSlip", with = "string_as_f64")]
+    pub synth_redeem_average_slip: f64,
+    #[serde(rename = "averageSlip", with = "string_as_f64")]
+    pub average_slip: f64,
+    #[serde(rename = "runePriceUSD", with = "string_as_f64")]
+    pub rune_price_usd: f64,
+}
+
+
+// Query Params Struct
 #[derive(Deserialize)]
 pub struct QueryParams {
     pub date_range: Option<String>, // e.g., "2023-08-01,2023-09-01"
