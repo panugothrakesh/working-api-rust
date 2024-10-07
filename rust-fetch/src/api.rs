@@ -1,6 +1,6 @@
 use reqwest::Error;
-use crate::models::{DepthHistoryResponse, RunePoolHistoryResponse, SwapHistoryResponse, Interval, RunePoolInterval, SwapInterval};  
-use crate::db::{insert_depth_history, insert_rune_pool_history, insert_swap_history};  
+use crate::models::{DepthHistoryResponse, RunePoolHistoryResponse, SwapHistoryResponse, EarningsHistoryResponse};  
+use crate::db::{insert_depth_history, insert_rune_pool_history, insert_swap_history, insert_earnings_history};  
 use chrono::{Utc};  
 use tokio::time::{sleep, Duration as TokioDuration}; 
 
@@ -187,4 +187,73 @@ pub async fn fetch_swap_history(client: &tokio_postgres::Client, mut from_timest
 
     // Return the collected intervals wrapped in SwapHistoryResponse
     Ok(SwapHistoryResponse { intervals: all_intervals })
+}
+
+// Function to fetch Earnings History
+pub async fn fetch_earnings_history(client: &tokio_postgres::Client, mut from_timestamp: i64) -> Result<EarningsHistoryResponse, Error> {
+    let now = Utc::now();
+    let current_timestamp = now.timestamp(); 
+    let interval = "hour";  // Set interval as 'hour' as you're fetching hourly data
+
+    let mut all_intervals = Vec::new();  // To store all fetched intervals
+
+    loop {
+        let midgard_api_url = format!(
+            "https://midgard.ninerealms.com/v2/history/earnings?interval={}&from={}&count=400",
+            interval,
+            from_timestamp
+        );
+
+        println!("Fetching earnings history data from: {}", midgard_api_url);
+
+        let response = reqwest::get(&midgard_api_url).await?;
+
+        if !response.status().is_success() {
+            if response.status().as_u16() == 429 {
+                println!("Received status code 429 Too Many Requests. Waiting for 5 seconds...");
+                sleep(TokioDuration::from_secs(5)).await; 
+                continue; 
+            } else {
+                eprintln!("Error: Received status code {}", response.status());
+                break; 
+            }
+        }
+
+        // Deserialize the response
+        let earnings_history_response: EarningsHistoryResponse = response.json().await?;
+
+        if earnings_history_response.intervals.is_empty() {
+            println!("No new intervals fetched. Stopping fetch.");
+            break;  // Exit the loop if no new intervals are fetched
+        }
+
+        // Log the start of database insertion for earnings
+        println!("Starting to insert earnings data into the database...");
+
+        // Insert the fetched intervals into the database
+        match insert_earnings_history(client, &earnings_history_response.intervals).await {
+            Ok(_) => println!("Earnings data insertion attempt completed."),
+            Err(e) => eprintln!("Failed to insert earnings intervals into the database: {}", e),
+        }
+
+        // Collect all intervals for later use
+        all_intervals.extend(earnings_history_response.intervals.clone());
+
+        // Update `from_timestamp` to the last `end_time` of the fetched intervals
+        if let Some(last_interval) = earnings_history_response.intervals.last() {
+            from_timestamp = last_interval.end_time + 1;  // Start from 1 second after the last interval's end_time
+        }
+
+        // Stop fetching once we reach the current timestamp
+        if from_timestamp >= current_timestamp {
+            println!("Reached the current date. Stopping fetch.");
+            break; 
+        }
+
+        // Log the next fetch round
+        println!("Fetching next batch of earnings data starting from: {}", from_timestamp);
+    }
+
+    // Return the collected intervals wrapped in EarningsHistoryResponse
+    Ok(EarningsHistoryResponse { intervals: all_intervals })
 }

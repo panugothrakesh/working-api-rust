@@ -135,17 +135,64 @@ pub struct SwapInterval {
     pub rune_price_usd: f64,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct EarningsHistoryResponse {
+    pub intervals: Vec<EarningsInterval>,
+}
+
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct EarningsInterval {
+    #[serde(rename = "startTime", with = "string_as_i64")]
+    pub start_time: i64,
+    #[serde(rename = "endTime", with = "string_as_i64")]
+    pub end_time: i64,
+    #[serde(rename = "liquidityFees", with = "string_as_f64")]
+    pub liquidity_fees: f64,
+    #[serde(rename = "blockRewards", with = "string_as_i64")]
+    pub block_rewards: i64,
+    #[serde(rename = "earnings", with = "string_as_f64")]
+    pub earnings: f64,
+    #[serde(rename = "bondingEarnings", with = "string_as_f64")]
+    pub bonding_earnings: f64,
+    #[serde(rename = "liquidityEarnings", with = "string_as_f64")]
+    pub liquidity_earnings: f64,
+    #[serde(rename = "avgNodeCount", with = "string_as_f64")]
+    pub avg_node_count: f64,
+    #[serde(rename = "runePriceUSD", with = "string_as_f64")]
+    pub rune_price_usd: f64,
+    pub pools: Vec<Pool>, // Assuming this is correct
+}
+
+// Nested Pool Struct that stores pool-specific earnings details
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Pool {
+    #[serde(rename = "pool")]
+    pub pool_name: String,
+    #[serde(rename = "assetLiquidityFees", with = "string_as_f64")]
+    pub asset_liquidity_fees: f64,
+    #[serde(rename = "runeLiquidityFees", with = "string_as_f64")]
+    pub rune_liquidity_fees: f64,
+    #[serde(rename = "totalLiquidityFeesRune", with = "string_as_f64")]
+    pub total_liquidity_fees_rune: f64,
+    #[serde(rename = "saverEarning", with = "string_as_f64")]
+    pub saver_earning: f64,
+    #[serde(rename = "rewards", with = "string_as_f64")]
+    pub rewards: f64,
+    #[serde(rename = "earnings", with = "string_as_f64")]
+    pub earnings: f64,
+}
+
 
 // Query Params Struct
 #[derive(Deserialize)]
 pub struct QueryParams {
-    pub date_range: Option<String>, // e.g., "2023-08-01,2023-09-01"
-    pub liquidity_gt: Option<i64>,   // e.g., minimum liquidity
-    pub sort_by: Option<String>,      // e.g., "timestamp"
-    pub order: Option<String>,         // e.g., "asc" or "desc"
-    pub page: Option<u32>,            // for pagination
-    pub limit: Option<u32>,           // limit of records
-    pub interval: Option<String>,
+    pub from: Option<String>,  // e.g., "02-10-2024"
+    pub to: Option<String>,    // e.g., "04-10-2024"
+    pub order: Option<String>,          // e.g., "asc" or "desc"
+    pub page: Option<i64>,              // e.g., 2
+    pub limit: Option<i64>,             // e.g., 400
+    pub interval: Option<String>,       // e.g., "day", "week", "month", "6months", "year"
 }
 
 // Helper modules for deserialization

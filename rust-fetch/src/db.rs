@@ -1,5 +1,5 @@
 use tokio_postgres::{Client, Error as PgError, NoTls};
-use crate::models::{Interval, RunePoolInterval, SwapInterval, QueryParams}; // Ensure QueryParams, RunePoolInterval, and SwapInterval are imported
+use crate::models::{Interval, RunePoolInterval, SwapInterval, EarningsInterval, Pool}; // Ensure EarningsInterval and Pool are imported
 use std::env;
 use chrono::{NaiveDateTime};
 
@@ -20,13 +20,9 @@ pub async fn connect_db() -> Result<Client, PgError> {
 // Function to insert fetched data into the depth_history table
 pub async fn insert_depth_history(client: &Client, intervals: &[Interval]) -> Result<(), PgError> {
     for interval in intervals {
-        // Check if the record already exists based on start_time (or any other unique field)
-        let exists_query = "
-            SELECT 1 FROM depth_history WHERE start_time = $1
-        ";
+        let exists_query = "SELECT 1 FROM depth_history WHERE start_time = $1";
         let existing_rows = client.query(exists_query, &[&interval.start_time]).await?;
 
-        // If no rows are found, insert new data
         if existing_rows.is_empty() {
             let query = "
                 INSERT INTO depth_history (
@@ -49,9 +45,7 @@ pub async fn insert_depth_history(client: &Client, intervals: &[Interval]) -> Re
 // New function to insert fetched data into the rune_pool_history table
 pub async fn insert_rune_pool_history(client: &Client, intervals: &[RunePoolInterval]) -> Result<(), PgError> {
     for interval in intervals {
-        let exists_query = "
-            SELECT 1 FROM rune_pool_history WHERE start_time = $1
-        ";
+        let exists_query = "SELECT 1 FROM rune_pool_history WHERE start_time = $1";
         let existing_rows = client.query(exists_query, &[&interval.start_time]).await?;
 
         if existing_rows.is_empty() {
@@ -72,12 +66,9 @@ pub async fn insert_rune_pool_history(client: &Client, intervals: &[RunePoolInte
 // Function to insert fetched data into the swaps table
 pub async fn insert_swap_history(client: &Client, intervals: &[SwapInterval]) -> Result<(), PgError> {
     for interval in intervals {
-        let exists_query = "
-            SELECT 1 FROM swaps WHERE start_time = $1
-        ";
+        let exists_query = "SELECT 1 FROM swaps WHERE start_time = $1";
         let existing_rows = client.query(exists_query, &[&interval.start_time]).await?;
 
-        // Only insert if the entry doesn't already exist
         if existing_rows.is_empty() {
             let query = "
                 INSERT INTO swaps (
@@ -99,7 +90,6 @@ pub async fn insert_swap_history(client: &Client, intervals: &[SwapInterval]) ->
                 )
             ";
 
-            // The values here should match the number of columns in the INSERT statement
             client.execute(query, &[
                 &interval.start_time, 
                 &interval.end_time,
@@ -120,65 +110,98 @@ pub async fn insert_swap_history(client: &Client, intervals: &[SwapInterval]) ->
     Ok(())
 }
 
+pub async fn insert_earnings_history(client: &Client, intervals: &[EarningsInterval]) -> Result<(), PgError> {
+    for interval in intervals {
+        // Check if the earnings record already exists based on start_time
+        let exists_query = "
+            SELECT 1 FROM earnings_history WHERE start_time = $1
+        ";
+        let existing_rows = client.query(exists_query, &[&interval.start_time]).await?;
+
+        if existing_rows.is_empty() {
+            // Log only the start of the earnings insertion
+            println!("Inserting earnings data for start_time: {}", interval.start_time);
+
+            let query = "
+                INSERT INTO earnings_history (
+                    start_time, end_time, liquidity_fees, block_rewards, earnings,
+                    bonding_earnings, liquidity_earnings, avg_node_count, rune_price_usd
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            ";
+
+            match client.execute(query, &[
+                &interval.start_time,                // i64
+                &interval.end_time,                  // i64
+                &interval.liquidity_fees,            // f64
+                &interval.block_rewards,             // i64
+                &interval.earnings,                  // f64
+                &interval.bonding_earnings,          // f64
+                &interval.liquidity_earnings,        // f64
+                &interval.avg_node_count,            // f64
+                &interval.rune_price_usd,            // f64
+            ]).await {
+                Ok(_) => println!("Inserted earnings data successfully for start_time: {}", interval.start_time),
+                Err(e) => eprintln!("Failed to insert earnings data for start_time {}: {}", interval.start_time, e),
+            }
+
+            // Insert pools associated with the earnings interval
+            if let Err(e) = insert_pools(client, &interval.pools, interval.start_time).await {
+                eprintln!("Failed to insert pool data for earnings_start_time {}: {}", interval.start_time, e);
+            }
+        } else {
+            println!("Earnings data for start_time {} already exists.", interval.start_time);
+        }
+    }
+    Ok(())
+}
+
+// Function to insert pool data, linked by the earnings interval start_time
+pub async fn insert_pools(client: &Client, pools: &[Pool], earnings_start_time: i64) -> Result<(), PgError> {
+    for pool in pools {
+        let query = "
+            INSERT INTO pool_history (
+                pool_name, asset_liquidity_fees, rune_liquidity_fees, total_liquidity_fees_rune,
+                saver_earning, rewards, earnings, earnings_start_time
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        ";
+
+        match client.execute(query, &[
+            &pool.pool_name, &pool.asset_liquidity_fees, &pool.rune_liquidity_fees,
+            &pool.total_liquidity_fees_rune, &pool.saver_earning, &pool.rewards,
+            &pool.earnings, &earnings_start_time
+        ]).await {
+            Ok(_) => (), // No need to log for each pool insertion
+            Err(e) => eprintln!("Failed to insert pool data for earnings_start_time {} and pool {}: {}", earnings_start_time, pool.pool_name, e),
+        };
+    }
+    Ok(())
+}
+
+
 // Function to get the last timestamp from the depth_history table
 pub async fn get_last_timestamp(client: &Client) -> Result<i64, PgError> {
-    // Query to get the maximum end_time
     let row = client.query_one("SELECT COALESCE(MAX(end_time), 0) FROM depth_history", &[]).await?;
     Ok(row.get(0)) // Assuming end_time is stored as i64
 }
 
 // Function to get the last timestamp from the rune_pool_history table
 pub async fn get_last_rune_pool_timestamp(client: &Client) -> Result<i64, PgError> {
-    // Query to get the maximum end_time
     let row = client.query_one("SELECT COALESCE(MAX(end_time), 0) FROM rune_pool_history", &[]).await?;
     Ok(row.get(0)) // Assuming end_time is stored as i64
 }
 
 // Function to get the last timestamp from the swaps table
 pub async fn get_last_swap_timestamp(client: &Client) -> Result<i64, PgError> {
-    // Query to get the maximum end_time
     let row = client.query_one("SELECT COALESCE(MAX(end_time), 0) FROM swaps", &[]).await?;
     Ok(row.get(0)) // Assuming end_time is stored as i64
 }
 
-// New function to get depth history based on query parameters
-async fn get_depth_history(client: &Client) -> Result<Vec<Interval>, Box<dyn std::error::Error>> {
-    let query = "SELECT asset_depth, asset_price, asset_price_usd, end_time,
-                 liquidity_units, luvi, members_count, rune_depth, start_time,
-                 synth_supply, synth_units, units 
-                 FROM depth_history ORDER BY end_time DESC LIMIT 400";
+// Function to get the last timestamp from the earnings_history table
+pub async fn get_last_earnings_timestamp(client: &Client) -> Result<i64, PgError> {
+    let row = client.query_opt("SELECT COALESCE(MAX(end_time), 0) FROM earnings_history", &[]).await?;
     
-    let rows = client.query(query, &[]).await?;
-    
-    // Convert database rows to a vector of Intervals
-    let intervals: Vec<Interval> = rows.iter().map(|row| {
-        let end_time_str: String = row.get("end_time");
-        let start_time_str: String = row.get("start_time");
-        
-        // Convert date strings to Unix timestamps
-        let end_time: i64 = NaiveDateTime::parse_from_str(&end_time_str, "%Y-%m-%d %H:%M:%S")
-            .map(|dt| dt.timestamp())
-            .unwrap_or_default(); // Provide a default if parsing fails
-
-        let start_time: i64 = NaiveDateTime::parse_from_str(&start_time_str, "%Y-%m-%d %H:%M:%S")
-            .map(|dt| dt.timestamp())
-            .unwrap_or_default(); // Provide a default if parsing fails
-
-        Interval {
-            asset_depth: row.get::<_, String>("asset_depth").parse::<i64>().unwrap_or_default(), // Convert to i64
-            asset_price: row.get::<_, String>("asset_price").parse::<f64>().unwrap_or_default(), // Convert to f64
-            asset_price_usd: row.get::<_, String>("asset_price_usd").parse::<f64>().unwrap_or_default(), // Convert to f64
-            end_time, // Use the converted end_time
-            liquidity_units: row.get::<_, String>("liquidity_units").parse::<i64>().unwrap_or_default(), // Convert to i64
-            luvi: row.get::<_, String>("luvi").parse::<f64>().unwrap_or_default(), // Convert to f64
-            members_count: row.get::<_, String>("members_count").parse::<i32>().unwrap_or_default(), // Convert to i32
-            rune_depth: row.get::<_, String>("rune_depth").parse::<i64>().unwrap_or_default(), // Convert to i64
-            start_time, // Use the converted start_time
-            synth_supply: row.get::<_, String>("synth_supply").parse::<i64>().unwrap_or_default(), // Convert to i64
-            synth_units: row.get::<_, String>("synth_units").parse::<i64>().unwrap_or_default(), // Convert to i64
-            units: row.get::<_, String>("units").parse::<i64>().unwrap_or_default(), // Convert to i64
-        }
-    }).collect();
-
-    Ok(intervals)
+    match row {
+        Some(row) => Ok(row.get(0)),
+        None => Ok(0),  // Return 0 if no rows are found
+    }
 }

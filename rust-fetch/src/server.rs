@@ -4,29 +4,18 @@ use axum::{
 };
 use std::net::SocketAddr;
 use crate::db::connect_db;
-use crate::models::{Interval, RunePoolInterval, SwapInterval}; // Ensure SwapInterval is defined for swap history
+use crate::models::{Interval, RunePoolInterval, SwapInterval, EarningsInterval, Pool, QueryParams}; // Ensure SwapInterval is defined for swap history
 use serde_json::json;
-use serde::Deserialize;
 use chrono::{NaiveDateTime, Duration};
-use std::collections::HashMap;
 
-#[derive(Deserialize)]
-pub struct QueryParams {
-    from: Option<String>,  // e.g., "02-10-2024"
-    to: Option<String>,    // e.g., "04-10-2024"
-    liquidity_gt: Option<i64>,    // e.g., 100000
-    order: Option<String>,          // e.g., "asc" or "desc"
-    page: Option<i64>,              // e.g., 2
-    limit: Option<i64>,             // e.g., 400
-    interval: Option<String>,       // e.g., "day", "week", "month", "6months", "year"
-}
 
 // Function to start the server
 pub async fn start_server() {
     let app = Router::new()
         .route("/depth-history", get(get_depth_history))   // Route for depth history
         .route("/rune-pool-history", get(get_rune_pool_history)) // Route for rune pool history
-        .route("/swap-history", get(get_swap_history));    // Route for swap history
+        .route("/swap-history", get(get_swap_history))    // Route for swap history
+        .route("/earnings-history", get(get_earnings_history)); // Route for earnings history with pools
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 8080));
     println!("Server running at http://{}", addr);
@@ -35,6 +24,116 @@ pub async fn start_server() {
         .serve(app.into_make_service())
         .await
         .unwrap();
+}
+
+async fn get_earnings_history(Query(params): Query<QueryParams>) -> Json<serde_json::Value> {
+    match connect_db().await {
+        Ok(client) => {
+            // Query to fetch earnings history
+            let mut earnings_query = String::from(
+                "SELECT start_time, end_time, liquidity_fees, block_rewards, earnings, bonding_earnings, liquidity_earnings, \
+                avg_node_count, rune_price_usd FROM earnings_history"
+            );
+
+            // Apply filters
+            let mut filters = Vec::new();
+            build_query_filters(&mut filters, &params);
+            if !filters.is_empty() {
+                earnings_query.push_str(" WHERE ");
+                earnings_query.push_str(&filters.join(" AND "));
+            }
+
+            // Apply order and pagination
+            earnings_query.push_str(&build_order_clause(params.order.clone(), "start_time"));
+            let limit = params.limit.unwrap_or(400);
+            let offset = params.page.unwrap_or(1) * limit - limit;
+            earnings_query.push_str(&format!(" LIMIT {} OFFSET {}", limit, offset));
+
+            // Fetch earnings history data
+            let earnings_rows = client.query(&earnings_query, &[]).await.unwrap();
+            let mut earnings_intervals: Vec<EarningsInterval> = parse_rows_to_earnings_intervals(earnings_rows);
+
+            // Fetch and attach pools for each earnings interval
+            for earnings in &mut earnings_intervals {
+                // Query to fetch related pools for each earnings interval
+                let pools_query = format!(
+                    "SELECT pool_name, asset_liquidity_fees, rune_liquidity_fees, total_liquidity_fees_rune, \
+                    saver_earning, rewards, earnings FROM pool_history WHERE earnings_start_time = {}",
+                    earnings.start_time
+                );
+
+                let pool_rows = client.query(&pools_query, &[]).await.unwrap();
+                let pools: Vec<Pool> = parse_rows_to_pools(pool_rows);
+
+                // Attach the pools to the corresponding earnings interval
+                earnings.pools = pools;
+            }
+
+            // Prepare the final response
+            Json(json!({ "intervals": earnings_intervals }))
+        }
+        Err(e) => {
+            eprintln!("Failed to connect to the database: {}", e);
+            Json(json!({ "error": "Failed to connect to database" }))
+        }
+    }
+}
+
+
+fn aggregate_earnings_by_interval(
+    data: Vec<EarningsInterval>,
+    interval_duration: Duration,
+    limit: usize
+) -> Vec<EarningsInterval> {
+    let mut aggregated_data: Vec<EarningsInterval> = Vec::new();
+    let mut current_agg: Option<EarningsInterval> = None;
+    let mut output_count = 0;
+    let mut start_of_interval: Option<NaiveDateTime> = None;
+
+    for entry in data {
+        let start_time = NaiveDateTime::from_timestamp(entry.start_time, 0);
+
+        if let Some(start_interval) = start_of_interval {
+            if start_time - start_interval < interval_duration {
+                if let Some(ref mut agg) = current_agg {
+                    agg.aggregate(&entry);
+                }
+            } else {
+                if let Some(agg) = current_agg.take() {
+                    aggregated_data.push(agg);
+                    output_count += 1;
+                    if output_count >= limit {
+                        break;
+                    }
+                }
+                start_of_interval = Some(start_time);
+                current_agg = Some(entry.clone());
+            }
+        } else {
+            start_of_interval = Some(start_time);
+            current_agg = Some(entry.clone());
+        }
+    }
+
+    if let Some(agg) = current_agg {
+        aggregated_data.push(agg);
+    }
+
+    aggregated_data
+}
+
+// Trait for aggregating earnings history intervals
+impl EarningsInterval {
+    fn aggregate(&mut self, other: &Self) {
+        self.liquidity_fees += other.liquidity_fees;
+        self.block_rewards += other.block_rewards;
+        self.earnings += other.earnings;
+        self.bonding_earnings += other.bonding_earnings;
+        self.liquidity_earnings += other.liquidity_earnings;
+        self.avg_node_count = (self.avg_node_count + other.avg_node_count) / 2.0;
+        self.rune_price_usd = other.rune_price_usd;
+        self.end_time = self.end_time.max(other.end_time);
+    }
 }
 
 // Aggregation logic for depth history
@@ -239,37 +338,30 @@ impl SwapInterval {
 async fn get_depth_history(Query(params): Query<QueryParams>) -> Json<serde_json::Value> {
     match connect_db().await {
         Ok(client) => {
-            let mut query = String::from("SELECT asset_depth, asset_price, asset_price_usd, end_time, \
-                        liquidity_units, luvi, members_count, rune_depth, start_time, \
-                        synth_supply, synth_units, units FROM depth_history");
+            let mut query = String::from(
+                "SELECT asset_depth, asset_price, asset_price_usd, end_time, liquidity_units, luvi, members_count, rune_depth, \
+                start_time, synth_supply, synth_units, units FROM depth_history"
+            );
 
+            // Apply filters (if any)
             let mut filters = Vec::new();
             build_query_filters(&mut filters, &params);
-
             if !filters.is_empty() {
                 query.push_str(" WHERE ");
                 query.push_str(&filters.join(" AND "));
             }
 
-            query.push_str(" ORDER BY start_time ASC");
+            // Apply order
+            query.push_str(&build_order_clause(params.order.clone(), "start_time"));
 
-            if let Some(interval) = &params.interval {
-                let rows = client.query(&query, &[]).await.unwrap();
-                let intervals: Vec<Interval> = parse_rows_to_intervals(rows);
-                let limit = params.limit.unwrap_or(400);
+            let limit = params.limit.unwrap_or(400);
+            let offset = params.page.unwrap_or(1) * limit - limit;
+            query.push_str(&format!(" LIMIT {} OFFSET {}", limit, offset));
 
-                let aggregated = aggregate_depth_by_interval(intervals, get_interval_duration(interval), limit as usize);
+            let rows = client.query(&query, &[]).await.unwrap();
+            let data: Vec<Interval> = parse_rows_to_intervals(rows);
 
-                return Json(json!({ "data": aggregated }));
-            } else {
-                let limit = params.limit.unwrap_or(400);
-                query.push_str(&format!(" LIMIT {}", limit));
-
-                let rows = client.query(&query, &[]).await.unwrap();
-                let data: Vec<Interval> = parse_rows_to_intervals(rows);
-
-                return Json(json!({ "data": data }));
-            }
+            Json(json!({ "intervals": data }))
         }
         Err(e) => {
             eprintln!("Failed to connect to the database: {}", e);
@@ -282,35 +374,29 @@ async fn get_depth_history(Query(params): Query<QueryParams>) -> Json<serde_json
 async fn get_rune_pool_history(Query(params): Query<QueryParams>) -> Json<serde_json::Value> {
     match connect_db().await {
         Ok(client) => {
-            let mut query = String::from("SELECT units, count, start_time, end_time FROM rune_pool_history");
+            let mut query = String::from(
+                "SELECT units, count, start_time, end_time FROM rune_pool_history"
+            );
 
+            // Apply filters (if any)
             let mut filters = Vec::new();
             build_query_filters(&mut filters, &params);
-
             if !filters.is_empty() {
                 query.push_str(" WHERE ");
                 query.push_str(&filters.join(" AND "));
             }
 
-            query.push_str(" ORDER BY start_time ASC");
+            // Apply order
+            query.push_str(&build_order_clause(params.order.clone(), "start_time"));
 
-            if let Some(interval) = &params.interval {
-                let rows = client.query(&query, &[]).await.unwrap();
-                let intervals: Vec<RunePoolInterval> = parse_rows_to_rune_pool_intervals(rows);
-                let limit = params.limit.unwrap_or(400);
+            let limit = params.limit.unwrap_or(400);
+            let offset = params.page.unwrap_or(1) * limit - limit;
+            query.push_str(&format!(" LIMIT {} OFFSET {}", limit, offset));
 
-                let aggregated = aggregate_rune_pool_by_interval(intervals, get_interval_duration(interval), limit as usize);
+            let rows = client.query(&query, &[]).await.unwrap();
+            let data: Vec<RunePoolInterval> = parse_rows_to_rune_pool_intervals(rows);
 
-                return Json(json!({ "data": aggregated }));
-            } else {
-                let limit = params.limit.unwrap_or(400);
-                query.push_str(&format!(" LIMIT {}", limit));
-
-                let rows = client.query(&query, &[]).await.unwrap();
-                let data: Vec<RunePoolInterval> = parse_rows_to_rune_pool_intervals(rows);
-
-                return Json(json!({ "data": data }));
-            }
+            Json(json!({ "intervals": data }))
         }
         Err(e) => {
             eprintln!("Failed to connect to the database: {}", e);
@@ -323,44 +409,34 @@ async fn get_rune_pool_history(Query(params): Query<QueryParams>) -> Json<serde_
 async fn get_swap_history(Query(params): Query<QueryParams>) -> Json<serde_json::Value> {
     match connect_db().await {
         Ok(client) => {
-            let mut query = String::from("SELECT start_time, end_time, to_asset_count, to_rune_count, to_trade_count, \
-                                          from_trade_count, synth_mint_count, synth_redeem_count, total_count, \
-                                          to_asset_volume, to_rune_volume, to_trade_volume, from_trade_volume, \
-                                          synth_mint_volume, synth_redeem_volume, total_volume, total_volume_usd, \
-                                          to_asset_volume_usd, to_rune_volume_usd, to_trade_volume_usd, from_trade_volume_usd, \
-                                          synth_mint_volume_usd, synth_redeem_volume_usd, to_asset_fees, to_rune_fees, \
-                                          to_trade_fees, from_trade_fees, synth_mint_fees, synth_redeem_fees, total_fees, \
-                                          to_asset_average_slip, to_rune_average_slip, to_trade_average_slip, \
-                                          from_trade_average_slip, synth_mint_average_slip, synth_redeem_average_slip, \
-                                          average_slip, rune_price_usd FROM swaps");
+            let mut query = String::from(
+                "SELECT start_time, end_time, to_asset_count, to_rune_count, to_trade_count, \
+                from_trade_count, synth_mint_count, synth_redeem_count, total_count, to_asset_volume, \
+                to_rune_volume, to_trade_volume, from_trade_volume, synth_mint_volume, synth_redeem_volume, \
+                total_volume, total_volume_usd, to_asset_volume_usd, to_rune_volume_usd, to_trade_volume_usd, \
+                from_trade_volume_usd, synth_mint_volume_usd, synth_redeem_volume_usd, to_asset_fees, to_rune_fees, \
+                to_trade_fees, from_trade_fees, synth_mint_fees, synth_redeem_fees, total_fees FROM swaps"
+            );
 
+            // Apply filters (if any)
             let mut filters = Vec::new();
             build_query_filters(&mut filters, &params);
-
             if !filters.is_empty() {
                 query.push_str(" WHERE ");
                 query.push_str(&filters.join(" AND "));
             }
 
-            query.push_str(" ORDER BY start_time ASC");
+            // Apply order
+            query.push_str(&build_order_clause(params.order.clone(), "start_time"));
 
-            if let Some(interval) = &params.interval {
-                let rows = client.query(&query, &[]).await.unwrap();
-                let intervals: Vec<SwapInterval> = parse_rows_to_swap_intervals(rows);
-                let limit = params.limit.unwrap_or(400);
+            let limit = params.limit.unwrap_or(400);
+            let offset = params.page.unwrap_or(1) * limit - limit;
+            query.push_str(&format!(" LIMIT {} OFFSET {}", limit, offset));
 
-                let aggregated = aggregate_swap_by_interval(intervals, get_interval_duration(interval), limit as usize);
+            let rows = client.query(&query, &[]).await.unwrap();
+            let data: Vec<SwapInterval> = parse_rows_to_swap_intervals(rows);
 
-                return Json(json!({ "data": aggregated }));
-            } else {
-                let limit = params.limit.unwrap_or(400);
-                query.push_str(&format!(" LIMIT {}", limit));
-
-                let rows = client.query(&query, &[]).await.unwrap();
-                let data: Vec<SwapInterval> = parse_rows_to_swap_intervals(rows);
-
-                return Json(json!({ "data": data }));
-            }
+            Json(json!({ "intervals": data }))
         }
         Err(e) => {
             eprintln!("Failed to connect to the database: {}", e);
@@ -368,7 +444,6 @@ async fn get_swap_history(Query(params): Query<QueryParams>) -> Json<serde_json:
         }
     }
 }
-
 // Utility functions for query filters and interval parsing
 fn build_query_filters(filters: &mut Vec<String>, params: &QueryParams) {
     if let Some(from_date) = &params.from {
@@ -473,4 +548,44 @@ fn parse_rows_to_swap_intervals(rows: Vec<tokio_postgres::Row>) -> Vec<SwapInter
             rune_price_usd: row.get("rune_price_usd"),
         })
         .collect()
+}
+
+fn parse_rows_to_earnings_intervals(rows: Vec<tokio_postgres::Row>) -> Vec<EarningsInterval> {
+    rows.iter()
+        .map(|row| EarningsInterval {
+            start_time: row.get("start_time"),
+            end_time: row.get("end_time"),
+            liquidity_fees: row.get("liquidity_fees"),
+            block_rewards: row.get("block_rewards"),
+            earnings: row.get("earnings"),
+            bonding_earnings: row.get("bonding_earnings"),
+            liquidity_earnings: row.get("liquidity_earnings"),
+            avg_node_count: row.get("avg_node_count"),
+            rune_price_usd: row.get("rune_price_usd"),
+            pools: Vec::new(), // This will be populated later
+        })
+        .collect()
+}
+
+// Parse rows for pool history
+fn parse_rows_to_pools(rows: Vec<tokio_postgres::Row>) -> Vec<Pool> {
+    rows.iter()
+        .map(|row| Pool {
+            pool_name: row.get("pool_name"),
+            asset_liquidity_fees: row.get("asset_liquidity_fees"),
+            rune_liquidity_fees: row.get("rune_liquidity_fees"),
+            total_liquidity_fees_rune: row.get("total_liquidity_fees_rune"),
+            saver_earning: row.get("saver_earning"),
+            rewards: row.get("rewards"),
+            earnings: row.get("earnings"),
+        })
+        .collect()
+}
+
+fn build_order_clause(order: Option<String>, default_column: &str) -> String {
+    let order_by = order.unwrap_or_else(|| "asc".to_string()).to_lowercase();
+    match order_by.as_str() {
+        "asc" | "desc" => format!(" ORDER BY {} {}", default_column, order_by),
+        _ => format!(" ORDER BY {} asc", default_column),  // Default to 'asc'
+    }
 }
