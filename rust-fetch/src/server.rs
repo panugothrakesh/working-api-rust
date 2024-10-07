@@ -17,7 +17,7 @@ pub async fn start_server() {
         .route("/swap-history", get(get_swap_history))    // Route for swap history
         .route("/earnings-history", get(get_earnings_history)); // Route for earnings history with pools
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], 8080));
+    let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
     println!("Server running at http://{}", addr);
 
     axum::Server::bind(&addr)
