@@ -1,7 +1,3 @@
-# Ignore the .env file in rust-fetch directory
+# Ignore .env files
+.env
 rust-fetch/.env
-
-# Add other ignore patterns as needed
-target/
-*.log
-*.env
