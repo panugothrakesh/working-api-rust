@@ -7,8 +7,8 @@ use crate::db::connect_db;
 use crate::models::{Interval, RunePoolInterval, SwapInterval, EarningsInterval, Pool, QueryParams}; // Ensure SwapInterval is defined for swap history
 use serde_json::json;
 use chrono::{NaiveDateTime, Duration};
-use std::collections::HashMap;
 use std::convert::TryInto;
+use std::collections::HashMap;
 
 
 // Function to start the server
@@ -75,6 +75,31 @@ async fn get_earnings_history(Query(params): Query<QueryParams>) -> Json<serde_j
                 Vec::new()
             };
 
+            // Fetch pools associated with the earnings intervals
+            let start_times: Vec<i64> = paged_intervals.iter().map(|e| e.start_time).collect();
+            let pools_query = format!(
+                "SELECT earnings_start_time, pool_name, asset_liquidity_fees, rune_liquidity_fees, total_liquidity_fees_rune, \
+                saver_earning, rewards, earnings FROM pool_history WHERE earnings_start_time = ANY($1)"
+            );
+
+            let pool_rows = client.query(&pools_query, &[&start_times]).await.unwrap();
+            let pools = parse_rows_to_pools(pool_rows);
+
+            // Create a mapping from earnings_start_time to pools
+            let mut pools_map: HashMap<i64, Vec<Pool>> = HashMap::new();
+            for pool_with_time in pools {
+                pools_map.entry(pool_with_time.earnings_start_time)
+                    .or_insert_with(Vec::new)
+                    .push(pool_with_time.pool);  // Extract the `pool` field from `PoolWithStartTime`
+            }
+
+            // Add pools to the corresponding earnings interval
+            for earnings in &mut paged_intervals {
+                if let Some(pools) = pools_map.get(&earnings.start_time) {
+                    earnings.pools = pools.clone();
+                }
+            }
+
             // Apply ordering (ASC or DESC)
             if let Some(order) = &params.order {
                 if order == "desc" {
@@ -92,13 +117,30 @@ async fn get_earnings_history(Query(params): Query<QueryParams>) -> Json<serde_j
     }
 }
 
+// Parse rows for pool history
+fn parse_rows_to_pools(rows: Vec<tokio_postgres::Row>) -> Vec<PoolWithStartTime> {
+    rows.iter()
+        .map(|row| PoolWithStartTime {
+            earnings_start_time: row.get("earnings_start_time"),
+            pool: Pool {
+                pool_name: row.get("pool_name"),
+                asset_liquidity_fees: row.get("asset_liquidity_fees"),
+                rune_liquidity_fees: row.get("rune_liquidity_fees"),
+                total_liquidity_fees_rune: row.get("total_liquidity_fees_rune"),
+                saver_earning: row.get("saver_earning"),
+                rewards: row.get("rewards"),
+                earnings: row.get("earnings"),
+            }
+        })
+        .collect()
+}
 
-// Helper functions and structures
-
+// Define PoolWithStartTime struct to map pools to start time
 struct PoolWithStartTime {
     earnings_start_time: i64,
     pool: Pool,
 }
+
 
 fn aggregate_earnings_by_interval(
     data: Vec<EarningsInterval>,
@@ -682,21 +724,6 @@ fn parse_rows_to_earnings_intervals(rows: Vec<tokio_postgres::Row>) -> Vec<Earni
             avg_node_count: row.get("avg_node_count"),
             rune_price_usd: row.get("rune_price_usd"),
             pools: Vec::new(), // This will be populated later
-        })
-        .collect()
-}
-
-// Parse rows for pool history
-fn parse_rows_to_pools(rows: Vec<tokio_postgres::Row>) -> Vec<Pool> {
-    rows.iter()
-        .map(|row| Pool {
-            pool_name: row.get("pool_name"),
-            asset_liquidity_fees: row.get("asset_liquidity_fees"),
-            rune_liquidity_fees: row.get("rune_liquidity_fees"),
-            total_liquidity_fees_rune: row.get("total_liquidity_fees_rune"),
-            saver_earning: row.get("saver_earning"),
-            rewards: row.get("rewards"),
-            earnings: row.get("earnings"),
         })
         .collect()
 }
