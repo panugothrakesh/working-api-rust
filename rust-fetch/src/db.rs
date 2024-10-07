@@ -1,13 +1,18 @@
-use tokio_postgres::{Client, Error as PgError, NoTls};
+use postgres_native_tls::MakeTlsConnector;
+use native_tls::TlsConnector;
+use tokio_postgres::{Client, Error as PgError};
 use crate::models::{Interval, RunePoolInterval, SwapInterval, EarningsInterval, Pool}; // Ensure EarningsInterval and Pool are imported
-use std::env;
-use chrono::{NaiveDateTime};
 
-pub async fn connect_db() -> Result<Client, PgError> {
-    let db_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-    let (client, connection) = tokio_postgres::connect(&db_url, NoTls).await?;
+pub async fn connect_db() -> Result<tokio_postgres::Client, PgError> {
+    dotenv::dotenv().ok();
+    // Adjust the connection string here to remove sslmode=require
+    
+    let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL not set");
+    let connector = TlsConnector::builder().build().unwrap();
+    let connector = MakeTlsConnector::new(connector);
+    // Make sure the connection string does not contain sslmode=require
+    let (client, connection) = tokio_postgres::connect(&database_url, connector).await?;
 
-    // Spawn the connection in a background task
     tokio::spawn(async move {
         if let Err(e) = connection.await {
             eprintln!("Connection error: {}", e);

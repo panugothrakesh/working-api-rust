@@ -1,7 +1,7 @@
 use reqwest::Error;
 use crate::models::{DepthHistoryResponse, RunePoolHistoryResponse, SwapHistoryResponse, EarningsHistoryResponse};  
 use crate::db::{insert_depth_history, insert_rune_pool_history, insert_swap_history, insert_earnings_history};  
-use chrono::{Utc};  
+use chrono::Utc;  
 use tokio::time::{sleep, Duration as TokioDuration}; 
 
 // Function to fetch Depth History

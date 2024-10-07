@@ -7,6 +7,8 @@ use crate::db::connect_db;
 use crate::models::{Interval, RunePoolInterval, SwapInterval, EarningsInterval, Pool, QueryParams}; // Ensure SwapInterval is defined for swap history
 use serde_json::json;
 use chrono::{NaiveDateTime, Duration};
+use std::collections::HashMap;
+use std::convert::TryInto;
 
 
 // Function to start the server
@@ -29,48 +31,59 @@ pub async fn start_server() {
 async fn get_earnings_history(Query(params): Query<QueryParams>) -> Json<serde_json::Value> {
     match connect_db().await {
         Ok(client) => {
-            // Query to fetch earnings history
+            // Build the earnings query
             let mut earnings_query = String::from(
-                "SELECT start_time, end_time, liquidity_fees, block_rewards, earnings, bonding_earnings, liquidity_earnings, \
-                avg_node_count, rune_price_usd FROM earnings_history"
-            );
+                "SELECT start_time, end_time, block_rewards, earnings, bonding_earnings, liquidity_earnings, \
+                 avg_node_count, rune_price_usd, liquidity_fees FROM earnings_history"
+            );            
 
-            // Apply filters
             let mut filters = Vec::new();
             build_query_filters(&mut filters, &params);
+
             if !filters.is_empty() {
                 earnings_query.push_str(" WHERE ");
                 earnings_query.push_str(&filters.join(" AND "));
             }
 
-            // Apply order and pagination
-            earnings_query.push_str(&build_order_clause(params.order.clone(), "start_time"));
-            let limit = params.limit.unwrap_or(400);
-            let offset = params.page.unwrap_or(1) * limit - limit;
-            earnings_query.push_str(&format!(" LIMIT {} OFFSET {}", limit, offset));
+            // Apply ordering if provided in the query
+            let order_by = params.order.as_deref().unwrap_or("asc");
+            earnings_query.push_str(&format!(" ORDER BY start_time {}", order_by));
 
-            // Fetch earnings history data
+            // Fetch all earnings history data without a limit
             let earnings_rows = client.query(&earnings_query, &[]).await.unwrap();
             let mut earnings_intervals: Vec<EarningsInterval> = parse_rows_to_earnings_intervals(earnings_rows);
 
-            // Fetch and attach pools for each earnings interval
-            for earnings in &mut earnings_intervals {
-                // Query to fetch related pools for each earnings interval
-                let pools_query = format!(
-                    "SELECT pool_name, asset_liquidity_fees, rune_liquidity_fees, total_liquidity_fees_rune, \
-                    saver_earning, rewards, earnings FROM pool_history WHERE earnings_start_time = {}",
-                    earnings.start_time
-                );
+            // Convert params.limit (i64) to usize safely
+            let limit: usize = params.limit.unwrap_or(400).try_into().unwrap_or(400);
 
-                let pool_rows = client.query(&pools_query, &[]).await.unwrap();
-                let pools: Vec<Pool> = parse_rows_to_pools(pool_rows);
-
-                // Attach the pools to the corresponding earnings interval
-                earnings.pools = pools;
+            // Apply interval aggregation to earnings history if an interval is specified
+            if let Some(interval) = &params.interval {
+                let interval_duration = get_interval_duration(interval);
+                // Aggregate the data first, and then apply the limit of 400
+                earnings_intervals = aggregate_earnings_by_interval(earnings_intervals, interval_duration, limit);
             }
 
-            // Prepare the final response
-            Json(json!({ "intervals": earnings_intervals }))
+            // Pagination logic: Convert page and index to `usize`
+            let page: usize = params.page.unwrap_or(1).try_into().unwrap_or(1);
+            let start_index: usize = (page - 1) * limit;
+            let end_index: usize = std::cmp::min(start_index + limit, earnings_intervals.len());
+
+            // Ensure we are slicing with `usize` types
+            let mut paged_intervals = if start_index < earnings_intervals.len() {
+                earnings_intervals[start_index..end_index].to_vec()
+            } else {
+                Vec::new()
+            };
+
+            // Apply ordering (ASC or DESC)
+            if let Some(order) = &params.order {
+                if order == "desc" {
+                    paged_intervals.reverse();
+                }
+            }
+
+            // Return the final response in JSON format
+            Json(json!({ "intervals": paged_intervals }))
         }
         Err(e) => {
             eprintln!("Failed to connect to the database: {}", e);
@@ -79,6 +92,13 @@ async fn get_earnings_history(Query(params): Query<QueryParams>) -> Json<serde_j
     }
 }
 
+
+// Helper functions and structures
+
+struct PoolWithStartTime {
+    earnings_start_time: i64,
+    pool: Pool,
+}
 
 fn aggregate_earnings_by_interval(
     data: Vec<EarningsInterval>,
@@ -96,7 +116,7 @@ fn aggregate_earnings_by_interval(
         if let Some(start_interval) = start_of_interval {
             if start_time - start_interval < interval_duration {
                 if let Some(ref mut agg) = current_agg {
-                    agg.aggregate(&entry);
+                    agg.aggregate(&entry);  // Aggregate earnings and pools data
                 }
             } else {
                 if let Some(agg) = current_agg.take() {
@@ -122,7 +142,6 @@ fn aggregate_earnings_by_interval(
     aggregated_data
 }
 
-// Trait for aggregating earnings history intervals
 impl EarningsInterval {
     fn aggregate(&mut self, other: &Self) {
         self.liquidity_fees += other.liquidity_fees;
@@ -133,6 +152,19 @@ impl EarningsInterval {
         self.avg_node_count = (self.avg_node_count + other.avg_node_count) / 2.0;
         self.rune_price_usd = other.rune_price_usd;
         self.end_time = self.end_time.max(other.end_time);
+
+        for other_pool in &other.pools {
+            if let Some(self_pool) = self.pools.iter_mut().find(|p| p.pool_name == other_pool.pool_name) {
+                self_pool.asset_liquidity_fees += other_pool.asset_liquidity_fees;
+                self_pool.rune_liquidity_fees += other_pool.rune_liquidity_fees;
+                self_pool.total_liquidity_fees_rune += other_pool.total_liquidity_fees_rune;
+                self_pool.saver_earning += other_pool.saver_earning;
+                self_pool.rewards += other_pool.rewards;
+                self_pool.earnings += other_pool.earnings;
+            } else {
+                self.pools.push(other_pool.clone());
+            }
+        }
     }
 }
 
@@ -338,30 +370,57 @@ impl SwapInterval {
 async fn get_depth_history(Query(params): Query<QueryParams>) -> Json<serde_json::Value> {
     match connect_db().await {
         Ok(client) => {
+            // Build the depth history query
             let mut query = String::from(
-                "SELECT asset_depth, asset_price, asset_price_usd, end_time, liquidity_units, luvi, members_count, rune_depth, \
-                start_time, synth_supply, synth_units, units FROM depth_history"
+                "SELECT asset_depth, asset_price, asset_price_usd, end_time, \
+                        liquidity_units, luvi, members_count, rune_depth, start_time, \
+                        synth_supply, synth_units, units FROM depth_history"
             );
 
-            // Apply filters (if any)
             let mut filters = Vec::new();
             build_query_filters(&mut filters, &params);
+
             if !filters.is_empty() {
                 query.push_str(" WHERE ");
                 query.push_str(&filters.join(" AND "));
             }
 
-            // Apply order
-            query.push_str(&build_order_clause(params.order.clone(), "start_time"));
+            query.push_str(" ORDER BY start_time ASC");
 
-            let limit = params.limit.unwrap_or(400);
-            let offset = params.page.unwrap_or(1) * limit - limit;
-            query.push_str(&format!(" LIMIT {} OFFSET {}", limit, offset));
-
+            // Fetch all depth history data
             let rows = client.query(&query, &[]).await.unwrap();
-            let data: Vec<Interval> = parse_rows_to_intervals(rows);
+            let mut intervals: Vec<Interval> = parse_rows_to_intervals(rows);
 
-            Json(json!({ "intervals": data }))
+            // Convert params.limit (i64) to usize safely
+            let limit: usize = params.limit.unwrap_or(400).try_into().unwrap_or(400);
+
+            // Apply interval aggregation if an interval is specified
+            if let Some(interval) = &params.interval {
+                let interval_duration = get_interval_duration(interval);
+                intervals = aggregate_depth_by_interval(intervals, interval_duration, limit);
+            }
+
+            // Pagination logic: Convert page and index to `usize`
+            let page: usize = params.page.unwrap_or(1).try_into().unwrap_or(1);
+            let start_index: usize = (page - 1) * limit;
+            let end_index: usize = std::cmp::min(start_index + limit, intervals.len());
+
+            // Ensure we are slicing with `usize` types
+            let mut paged_intervals = if start_index < intervals.len() {
+                intervals[start_index..end_index].to_vec()
+            } else {
+                Vec::new()
+            };
+
+            // Apply ordering (ASC or DESC)
+            if let Some(order) = &params.order {
+                if order == "desc" {
+                    paged_intervals.reverse();
+                }
+            }
+
+            // Return the final response in JSON format
+            Json(json!({ "data": paged_intervals }))
         }
         Err(e) => {
             eprintln!("Failed to connect to the database: {}", e);
@@ -369,34 +428,61 @@ async fn get_depth_history(Query(params): Query<QueryParams>) -> Json<serde_json
         }
     }
 }
+
 
 // Handler for rune pool history
 async fn get_rune_pool_history(Query(params): Query<QueryParams>) -> Json<serde_json::Value> {
     match connect_db().await {
         Ok(client) => {
+            // Build the rune pool history query
             let mut query = String::from(
                 "SELECT units, count, start_time, end_time FROM rune_pool_history"
             );
 
-            // Apply filters (if any)
             let mut filters = Vec::new();
             build_query_filters(&mut filters, &params);
+
             if !filters.is_empty() {
                 query.push_str(" WHERE ");
                 query.push_str(&filters.join(" AND "));
             }
 
-            // Apply order
-            query.push_str(&build_order_clause(params.order.clone(), "start_time"));
+            query.push_str(" ORDER BY start_time ASC");
 
-            let limit = params.limit.unwrap_or(400);
-            let offset = params.page.unwrap_or(1) * limit - limit;
-            query.push_str(&format!(" LIMIT {} OFFSET {}", limit, offset));
-
+            // Fetch all rune pool history data
             let rows = client.query(&query, &[]).await.unwrap();
-            let data: Vec<RunePoolInterval> = parse_rows_to_rune_pool_intervals(rows);
+            let mut intervals: Vec<RunePoolInterval> = parse_rows_to_rune_pool_intervals(rows);
 
-            Json(json!({ "intervals": data }))
+            // Convert params.limit (i64) to usize safely
+            let limit: usize = params.limit.unwrap_or(400).try_into().unwrap_or(400);
+
+            // Apply interval aggregation if an interval is specified
+            if let Some(interval) = &params.interval {
+                let interval_duration = get_interval_duration(interval);
+                intervals = aggregate_rune_pool_by_interval(intervals, interval_duration, limit);
+            }
+
+            // Pagination logic: Convert page and index to `usize`
+            let page: usize = params.page.unwrap_or(1).try_into().unwrap_or(1);
+            let start_index: usize = (page - 1) * limit;
+            let end_index: usize = std::cmp::min(start_index + limit, intervals.len());
+
+            // Ensure we are slicing with `usize` types
+            let mut paged_intervals = if start_index < intervals.len() {
+                intervals[start_index..end_index].to_vec()
+            } else {
+                Vec::new()
+            };
+
+            // Apply ordering (ASC or DESC)
+            if let Some(order) = &params.order {
+                if order == "desc" {
+                    paged_intervals.reverse();
+                }
+            }
+
+            // Return the final response in JSON format
+            Json(json!({ "data": paged_intervals }))
         }
         Err(e) => {
             eprintln!("Failed to connect to the database: {}", e);
@@ -404,39 +490,70 @@ async fn get_rune_pool_history(Query(params): Query<QueryParams>) -> Json<serde_
         }
     }
 }
+
 
 // Handler for swap history
 async fn get_swap_history(Query(params): Query<QueryParams>) -> Json<serde_json::Value> {
     match connect_db().await {
         Ok(client) => {
+            // Build the swap history query
             let mut query = String::from(
                 "SELECT start_time, end_time, to_asset_count, to_rune_count, to_trade_count, \
-                from_trade_count, synth_mint_count, synth_redeem_count, total_count, to_asset_volume, \
-                to_rune_volume, to_trade_volume, from_trade_volume, synth_mint_volume, synth_redeem_volume, \
-                total_volume, total_volume_usd, to_asset_volume_usd, to_rune_volume_usd, to_trade_volume_usd, \
-                from_trade_volume_usd, synth_mint_volume_usd, synth_redeem_volume_usd, to_asset_fees, to_rune_fees, \
-                to_trade_fees, from_trade_fees, synth_mint_fees, synth_redeem_fees, total_fees FROM swaps"
+                                          from_trade_count, synth_mint_count, synth_redeem_count, total_count, \
+                                          to_asset_volume, to_rune_volume, to_trade_volume, from_trade_volume, \
+                                          synth_mint_volume, synth_redeem_volume, total_volume, total_volume_usd, \
+                                          to_asset_volume_usd, to_rune_volume_usd, to_trade_volume_usd, from_trade_volume_usd, \
+                                          synth_mint_volume_usd, synth_redeem_volume_usd, to_asset_fees, to_rune_fees, \
+                                          to_trade_fees, from_trade_fees, synth_mint_fees, synth_redeem_fees, total_fees, \
+                                          to_asset_average_slip, to_rune_average_slip, to_trade_average_slip, \
+                                          from_trade_average_slip, synth_mint_average_slip, synth_redeem_average_slip, \
+                                          average_slip, rune_price_usd FROM swaps"
             );
 
-            // Apply filters (if any)
             let mut filters = Vec::new();
             build_query_filters(&mut filters, &params);
+
             if !filters.is_empty() {
                 query.push_str(" WHERE ");
                 query.push_str(&filters.join(" AND "));
             }
 
-            // Apply order
-            query.push_str(&build_order_clause(params.order.clone(), "start_time"));
+            query.push_str(" ORDER BY start_time ASC");
 
-            let limit = params.limit.unwrap_or(400);
-            let offset = params.page.unwrap_or(1) * limit - limit;
-            query.push_str(&format!(" LIMIT {} OFFSET {}", limit, offset));
-
+            // Fetch all swap history data
             let rows = client.query(&query, &[]).await.unwrap();
-            let data: Vec<SwapInterval> = parse_rows_to_swap_intervals(rows);
+            let mut intervals: Vec<SwapInterval> = parse_rows_to_swap_intervals(rows);
 
-            Json(json!({ "intervals": data }))
+            // Convert params.limit (i64) to usize safely
+            let limit: usize = params.limit.unwrap_or(400).try_into().unwrap_or(400);
+
+            // Apply interval aggregation if an interval is specified
+            if let Some(interval) = &params.interval {
+                let interval_duration = get_interval_duration(interval);
+                intervals = aggregate_swap_by_interval(intervals, interval_duration, limit);
+            }
+
+            // Pagination logic: Convert page and index to `usize`
+            let page: usize = params.page.unwrap_or(1).try_into().unwrap_or(1);
+            let start_index: usize = (page - 1) * limit;
+            let end_index: usize = std::cmp::min(start_index + limit, intervals.len());
+
+            // Ensure we are slicing with `usize` types
+            let mut paged_intervals = if start_index < intervals.len() {
+                intervals[start_index..end_index].to_vec()
+            } else {
+                Vec::new()
+            };
+
+            // Apply ordering (ASC or DESC)
+            if let Some(order) = &params.order {
+                if order == "desc" {
+                    paged_intervals.reverse();
+                }
+            }
+
+            // Return the final response in JSON format
+            Json(json!({ "data": paged_intervals }))
         }
         Err(e) => {
             eprintln!("Failed to connect to the database: {}", e);
@@ -444,6 +561,8 @@ async fn get_swap_history(Query(params): Query<QueryParams>) -> Json<serde_json:
         }
     }
 }
+
+
 // Utility functions for query filters and interval parsing
 fn build_query_filters(filters: &mut Vec<String>, params: &QueryParams) {
     if let Some(from_date) = &params.from {
@@ -580,12 +699,4 @@ fn parse_rows_to_pools(rows: Vec<tokio_postgres::Row>) -> Vec<Pool> {
             earnings: row.get("earnings"),
         })
         .collect()
-}
-
-fn build_order_clause(order: Option<String>, default_column: &str) -> String {
-    let order_by = order.unwrap_or_else(|| "asc".to_string()).to_lowercase();
-    match order_by.as_str() {
-        "asc" | "desc" => format!(" ORDER BY {} {}", default_column, order_by),
-        _ => format!(" ORDER BY {} asc", default_column),  // Default to 'asc'
-    }
 }
